@@ -1,0 +1,6 @@
+*.exe
+
+.claude/settings*.json
+docs/
+img/
+conf/
