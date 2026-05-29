@@ -333,6 +333,14 @@ func buildActionFromChild(c rawActionChild) (*Action, error) {
 			// Breed: 生成された子 Mascot が起動する Behavior 名。式評価しない。
 			a.BornBehavior = attr.Value
 			continue
+		case "TransformMascot":
+			// Transform: 変身先キャラ名。式評価しない。
+			a.TransformMascot = attr.Value
+			continue
+		case "TransformBehavior", "TransformBehaviour":
+			// Transform: 変身先キャラの起動 Behavior 名。英国綴り (Behaviour) もエイリアス。
+			a.TransformBehavior = attr.Value
+			continue
 		}
 		ev, err := NewEvaluator(attr.Value)
 		if err != nil {
@@ -401,6 +409,12 @@ func buildRefPlaceholder(c rawActionChild) (*Action, error) {
 			continue
 		case "BornBehavior":
 			a.BornBehavior = attr.Value
+			continue
+		case "TransformMascot":
+			a.TransformMascot = attr.Value
+			continue
+		case "TransformBehavior", "TransformBehaviour":
+			a.TransformBehavior = attr.Value
 			continue
 		}
 		ev, err := NewEvaluator(attr.Value)
@@ -519,6 +533,12 @@ func resolveOne(a *Action, all map[string]*Action, visiting map[string]bool, dep
 		}
 		if ch.BornBehavior != "" {
 			clone.BornBehavior = ch.BornBehavior
+		}
+		if ch.TransformMascot != "" {
+			clone.TransformMascot = ch.TransformMascot
+		}
+		if ch.TransformBehavior != "" {
+			clone.TransformBehavior = ch.TransformBehavior
 		}
 		a.Children[i] = &clone
 	}

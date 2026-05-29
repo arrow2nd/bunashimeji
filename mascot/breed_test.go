@@ -5,13 +5,18 @@ import (
 	"testing"
 )
 
-// mockSpawner は stepBreed の Spawn 呼び出しを記録する。
+// mockSpawner は stepBreed / stepTransform の呼び出しを記録する。
 type mockSpawner struct {
-	requests []SpawnRequest
+	requests   []SpawnRequest
+	transforms []TransformRequest
 }
 
 func (s *mockSpawner) Spawn(req SpawnRequest) {
 	s.requests = append(s.requests, req)
+}
+
+func (s *mockSpawner) Transform(req TransformRequest) {
+	s.transforms = append(s.transforms, req)
 }
 
 // TestStepBreedQueuesSpawn は Anzu の Divide1 Action を直接駆動して、

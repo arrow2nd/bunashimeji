@@ -251,6 +251,17 @@ func stepMove(s *ActionState, m *Mascot, env *Environment) bool {
 	// Animation はループ再生 (TargetX/Y 到達か境界衝突で終了)
 	advanceAnimation(s, m, env, true)
 
+	// Duration パラメータが指定されていれば強制終了タイマーとして尊重する。
+	// TargetX/Y を指定せず Velocity=0,0 で動かない「立ち止まり系」Move Action を、
+	// 親 Sequence の <ActionReference Duration="N"> で打ち切れるようにするフォールバック。
+	// (例: 「なーぬい置く」「転んで首が取れた」を含む Sequence。stepStay/stepFalling と同じ規約)
+	if ev, ok := s.Action.Params["Duration"]; ok && ev != nil {
+		dur, _ := ev.EvalInt(m.vm, s.CachedParams)
+		if dur > 0 && m.tick-s.StartTick >= dur {
+			return true
+		}
+	}
+
 	// X 方向通過判定
 	if dx, hasX := s.CachedParams["_dirX"].(int); hasX {
 		tx := toInt(s.CachedParams["_targetX"])
@@ -373,9 +384,11 @@ func stepEmbedded(s *ActionState, m *Mascot, env *Environment) bool {
 	case "Regist", "Interact", "BroadcastPosition":
 		// 登録/連携系 (v1 では no-op)
 		return true
-	case "Sound", "Transform":
-		// Sound (音声) / Transform (キャラ姿変化) は v1 スコープ外。no-op で受け流す。
+	case "Sound":
+		// Sound (音声) は v1 スコープ外。no-op で受け流す。
 		return true
+	case "Transform":
+		return stepTransform(s, m, env)
 	default:
 		// 未知 Embedded Class は Animate と同じく Pose を完走させて受け流す。
 		// 即終了させると 1 tick で抜けて連鎖アクションのアニメーションが全く見えなくなる。
@@ -487,12 +500,43 @@ func driveGrabbedWindow(m *Mascot) bool {
 	return true
 }
 
+// syncAnchorToGrabbedWindow は前 tick 以降にユーザーが手動でウィンドウをドラッグした
+// 分を mascot.Anchor に反映する。WalkWithIE / FallWithIE の各 tick 冒頭 (motion step
+// の前) で呼ぶことで、マスコットがウィンドウから取り残されず一緒に運ばれる。
+//
+// 仕組み: grabbedOffset = window.Min - anchor の関係を維持するように、
+// 実際の window.Min から逆算した anchor で上書きするだけ。
+//
+// 戻り値: ウィンドウが消滅・取得不能になったら false (呼び元は Action 終了)。
+func syncAnchorToGrabbedWindow(m *Mascot) bool {
+	if m.grabbedHWND == 0 {
+		return false
+	}
+	rect, ok := platform.GetExternalWindowRect(m.grabbedHWND)
+	if !ok {
+		m.clearGrab()
+		return false
+	}
+	m.Anchor.X = rect.Min.X - m.grabbedOffset.X
+	m.Anchor.Y = rect.Min.Y - m.grabbedOffset.Y
+	return true
+}
+
 // stepWalkWithIE は外部ウィンドウを掴んだまま歩く。
 // 歩行ロジックは stepMove に委譲し、毎 tick の末で駆動 (driveGrabbedWindow) する。
 // TargetX 到達 / BorderType 外し / ウィンドウ消失で完了。
 func stepWalkWithIE(s *ActionState, m *Mascot, env *Environment) bool {
+	firstTick := false
 	if _, tried := s.CachedParams["_grabInit"]; !tried {
+		firstTick = true
 		if !ensureGrabbed(s, m, env) {
+			return true
+		}
+	}
+	// 2 tick 目以降: ユーザーがウィンドウをドラッグした分を anchor に反映 (追従)。
+	if !firstTick {
+		if !syncAnchorToGrabbedWindow(m) {
+			m.clearGrab()
 			return true
 		}
 	}
@@ -509,8 +553,16 @@ func stepWalkWithIE(s *ActionState, m *Mascot, env *Environment) bool {
 // stepFallWithIE は外部ウィンドウを掴んだまま落下する。
 // 落下ロジックは stepFalling に委譲。床着地・速度減衰・ウィンドウ消失で完了。
 func stepFallWithIE(s *ActionState, m *Mascot, env *Environment) bool {
+	firstTick := false
 	if _, tried := s.CachedParams["_grabInit"]; !tried {
+		firstTick = true
 		if !ensureGrabbed(s, m, env) {
+			return true
+		}
+	}
+	if !firstTick {
+		if !syncAnchorToGrabbedWindow(m) {
+			m.clearGrab()
 			return true
 		}
 	}
@@ -562,19 +614,14 @@ func stepThrowIE(s *ActionState, m *Mascot, env *Environment) bool {
 		wy = toFloat(s.CachedParams["_wy"])
 	}
 
-	gravity := 2.0
-	if ev, ok := s.Action.Params["Gravity"]; ok && ev != nil {
-		gravity, _ = ev.EvalFloat(m.vm, s.CachedParams)
-	}
-	resX := 0.0
-	if ev, ok := s.Action.Params["RegistanceX"]; ok && ev != nil {
-		resX, _ = ev.EvalFloat(m.vm, s.CachedParams)
-	} else if ev, ok := s.Action.Params["ResistanceX"]; ok && ev != nil {
-		resX, _ = ev.EvalFloat(m.vm, s.CachedParams)
-	}
-
-	vx *= 1 - resX
-	vy += gravity
+	// 投げたウィンドウは本家の放物線落下ではなく、慣性で飛んでゆるやかに止まる挙動に統一。
+	// オリジナル XML の Gravity / RegistanceX は意図的に無視 (定義はそのまま受け取れる)。
+	const (
+		throwResX = 0.03
+		throwResY = 0.03
+	)
+	vx *= 1 - throwResX
+	vy *= 1 - throwResY
 	wx += vx
 	wy += vy
 
@@ -705,6 +752,10 @@ func stepFalling(s *ActionState, m *Mascot, env *Environment) bool {
 	grabOnImpact := behaviorMatchesRole(m.CurrentBehavior, "Thrown") ||
 		behaviorMatchesRole(m.CurrentBehavior, "Fall")
 
+	// 壁掴み不可キャラ用の反射係数。重力が常に vy を増やすため、
+	// 0.5 程度で水平を減衰させても 2〜3 回バウンドした後に床着地して停止する。
+	const wallRestitution = 0.5
+
 	// forceGrab は衝突した辺に対応する Behavior を forcedNext にセットし、成否を返す。
 	// 該当 Behavior がそのキャラ XML に存在しない場合 (例: 旧日本語版で
 	// 名前が「壁につかまる」になっている) は false を返して呼び出し元にフォールバック
@@ -821,22 +872,36 @@ func stepFalling(s *ActionState, m *Mascot, env *Environment) bool {
 	}
 	// 左壁: 左向きに飛んでいた = LookRight=false → On the Wall Condition
 	// `lookRight ? rightBorder : leftBorder` の左壁判定と整合させる。
+	//
+	// 壁掴み Behavior (HoldOntoWall) を持つキャラ (Shimeji 等) は従来通り snap + 確定遷移。
+	// 持たないキャラ (JP 名キャラ / 最小アクションのテスト char 等) は壁にめり込んで停止する
+	// 違和感を避けるため反射させ、Falling を継続して最終的に床着地→ Bouncing→ Stand に流す。
 	if vx < 0 && m.Anchor.X <= env.LeftWall(m.Anchor) {
 		m.Anchor.X = env.LeftWall(m.Anchor)
 		if grabOnImpact && forceGrab("HoldOntoWall") {
 			m.LookRight = false
+			m.Velocity = image.Point{}
+			return true
 		}
-		m.Velocity = image.Point{}
-		return true
+		vx = -vx * wallRestitution
+		s.CachedParams["_vx"] = vx
+		s.CachedParams["_ax"] = float64(m.Anchor.X)
+		m.Velocity = image.Point{X: int(vx), Y: int(vy)}
+		return false
 	}
 	// 右壁
 	if vx > 0 && m.Anchor.X >= env.RightWall(m.Anchor) {
 		m.Anchor.X = env.RightWall(m.Anchor)
 		if grabOnImpact && forceGrab("HoldOntoWall") {
 			m.LookRight = true
+			m.Velocity = image.Point{}
+			return true
 		}
-		m.Velocity = image.Point{}
-		return true
+		vx = -vx * wallRestitution
+		s.CachedParams["_vx"] = vx
+		s.CachedParams["_ax"] = float64(m.Anchor.X)
+		m.Velocity = image.Point{X: int(vx), Y: int(vy)}
+		return false
 	}
 	// 天井
 	if vy < 0 && m.Anchor.Y <= env.Ceiling(m.Anchor) {
@@ -1253,6 +1318,33 @@ func stepBreed(s *ActionState, m *Mascot, env *Environment) bool {
 		Anchor:          image.Point{X: m.Anchor.X + bornX, Y: m.Anchor.Y + bornY},
 		LookRight:       m.LookRight,
 		InitialBehavior: behavior,
+	})
+	return true
+}
+
+// stepTransform は Transform Action を 1 tick 進める。
+//
+// 役割: 自分のアニメーションを最後まで再生し、完了時に Spawner.Transform へ
+// 「自分を TransformMascot キャラに置き換える」リクエストを投げる。実際の差し替えは
+// 同 tick 末尾の drain で行われ、旧マスコットの Win32 ウィンドウが破棄されて新キャラの
+// ウィンドウが同位置に作られる。
+//
+// Spawner 未設定 (テスト等) なら no-op で受け流す。TransformMascot 未指定なら warning。
+func stepTransform(s *ActionState, m *Mascot, env *Environment) bool {
+	if !advanceAnimation(s, m, env, false) {
+		return false
+	}
+	if m.spawner == nil {
+		return true
+	}
+	if s.Action.TransformMascot == "" {
+		log.Printf("warning: action %q is Transform but TransformMascot empty", s.Action.Name)
+		return true
+	}
+	m.spawner.Transform(TransformRequest{
+		Self:            m,
+		NewName:         s.Action.TransformMascot,
+		InitialBehavior: s.Action.TransformBehavior,
 	})
 	return true
 }

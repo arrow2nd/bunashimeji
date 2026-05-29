@@ -307,6 +307,29 @@ func (m *Mascot) updateOnActiveWindowState() {
 	}
 }
 
+// Cleanup は Mascot 強制破棄時のクリーンアップ。
+// 通常 Action の完了パスを通らずに死ぬケース (tray「1体にする」/ ctx メニュー「他を消す」/
+// Transform) で、registry.entries に *Mascot 参照が残るのを防ぐために呼ぶ。
+//
+// 同名の Action 完了処理で既に Unregister 済みであれば二重呼び出しは無害 (該当 entry なし)。
+// CurrentAction / forcedNext / jsScratch も明示的に切って大物参照を即座に手放す
+// (どうせ呼び出し側で Mascot 自体が unreachable になるので意味は薄いが、
+// 万一スタックフレームや defer 経由で Mascot が一時的に生き残ってもメモリは早く解放される)。
+func (m *Mascot) Cleanup() {
+	if m == nil {
+		return
+	}
+	if m.registry != nil {
+		m.registry.UnregisterMascot(m)
+	}
+	m.CurrentAction = nil
+	m.CurrentBehavior = nil
+	m.forcedNext = nil
+	m.pendingNext = nil
+	m.BehaviorHistory = nil
+	m.jsScratch = nil
+}
+
 // SetDragging は render 層からマウス入力を反映する。
 // holding=true で開始、false で解放。
 func (m *Mascot) SetDragging(holding bool) {
@@ -453,6 +476,91 @@ func (m *Mascot) advanceBehavior() {
 	if next != nil {
 		m.startBehavior(next)
 	}
+}
+
+// PlayBehaviorByRole は roleAliases の役割名から Behavior を引いて startBehavior する。
+// 旧日本語版キャラ (例: "マウスの周りに集まる") も英語名 (例: "ChaseMouse") で発動できるよう、
+// tray メニュー等の「役割で指定したい」呼び出し元から使う。該当 Behavior が無ければ false。
+func (m *Mascot) PlayBehaviorByRole(role string) bool {
+	b, ok := m.findBehaviorByRole(role)
+	if !ok {
+		return false
+	}
+	m.startBehavior(b)
+	return true
+}
+
+// PlayActionByName は引数名の Action を強制再生する。コンテキストメニューからの手動再生用。
+//
+// 同名 Behavior が存在する場合は startBehavior 経由で正規ルートに乗せる
+// (Behavior の終了・遷移ロジックが機能するため、再生後に通常挙動へ戻る)。
+// 同名 Behavior が無い (= Sequence/Select の child や Embedded から参照される単発 Action 等)
+// 場合は、CurrentBehavior は据え置きで CurrentAction だけ差し替える。
+// Action 完了後の遷移は CurrentBehavior の advanceBehavior に従う。
+//
+// 未知の name に対しては false を返し、状態は変更しない。
+func (m *Mascot) PlayActionByName(name string) bool {
+	if b, ok := m.findBehaviorByName(name); ok {
+		m.startBehavior(b)
+		return true
+	}
+	a, ok := m.Actions[name]
+	if !ok {
+		return false
+	}
+	// メニュー単発再生では Behavior 遷移に乗らないので、Action 自身が終わらないと永久ループになる。
+	// Type=Move で TargetX/Y も Duration も持たない Action (例: 「なーぬい置く」「転んで首が取れた」)
+	// は自然終了の手段が無いため、Animation 1 周分の Duration を合成して必ず終わるようにする。
+	if needsAutoMoveDuration(a) {
+		if d := firstAnimTotalDuration(a); d > 0 {
+			a = withSyntheticDuration(a, d)
+		}
+	}
+	m.CurrentAction = newActionState(a, m)
+	m.refreshPose()
+	return true
+}
+
+// needsAutoMoveDuration は a が「Type=Move なのに自然終了の手段を持たない」かを返す。
+// TargetX/Y 通過判定も Duration タイマーも効かない Move は menu 単発再生で永久ループする。
+func needsAutoMoveDuration(a *Action) bool {
+	if a == nil || a.Type != "Move" {
+		return false
+	}
+	for _, k := range [...]string{"TargetX", "TargetY", "Duration"} {
+		if _, ok := a.Params[k]; ok {
+			return false
+		}
+	}
+	return true
+}
+
+// firstAnimTotalDuration は a の最初の Animation のポーズ Duration 合計を返す。
+// Animation Condition は評価せず宣言順最初のものを使う簡易見積もり。
+// menu 単発再生の「1 周打ち切り」用なので厳密一致は不要。
+func firstAnimTotalDuration(a *Action) int {
+	if a == nil || len(a.Animations) == 0 {
+		return 0
+	}
+	total := 0
+	for _, p := range a.Animations[0].Poses {
+		total += p.Duration
+	}
+	return total
+}
+
+// withSyntheticDuration は a のシャロークローンに Duration=d を注入して返す。
+// 元の Action (m.Actions に格納された共有実体) を汚さないよう、Params マップだけ
+// コピーしてから差し込む (resolveActionRefs の clone と同じパターン)。
+func withSyntheticDuration(a *Action, d int) *Action {
+	clone := *a
+	clone.Params = make(map[string]*Evaluator, len(a.Params)+1)
+	for k, v := range a.Params {
+		clone.Params[k] = v
+	}
+	ev, _ := NewEvaluator(fmt.Sprintf("%d", d))
+	clone.Params["Duration"] = ev
+	return &clone
 }
 
 func (m *Mascot) findBehaviorByName(name string) (*Behavior, bool) {

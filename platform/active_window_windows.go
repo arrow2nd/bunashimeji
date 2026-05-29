@@ -32,15 +32,23 @@ type ActiveWindow struct {
 
 	ClassName string // デバッグ・ロギング用
 	Title     string // デバッグ・ロギング用
+	Exe       string // プロセス実行ファイル basename (例: "chrome.exe"), 取得失敗時は空
 }
 
 // WindowMatcher はホワイトリスト 1 件分のマッチ条件。
-// ClassContains と TitleContains は case-insensitive の部分一致。
-// 両方指定なら AND マッチ、片方のみなら指定された方だけ評価。
-// 両方とも空のエントリは無効 (誤って全マッチさせないため)。
+// ClassContains / TitleContains は case-insensitive の部分一致。
+// ExeEquals はプロセス実行ファイル basename の case-insensitive 完全一致 (例: "chrome.exe")。
+// 複数指定なら AND マッチ、空のフィールドは評価しない。
+// 全フィールドが空のエントリは無効 (誤って全マッチさせないため)。
 type WindowMatcher struct {
 	ClassContains string
 	TitleContains string
+	ExeEquals     string
+}
+
+// IsZero はマッチ条件が一つも指定されていない (=無効エントリ) かを返す。
+func (m WindowMatcher) IsZero() bool {
+	return m.ClassContains == "" && m.TitleContains == "" && m.ExeEquals == ""
 }
 
 // 自プロセスのマスコットウィンドウのクラス名 (window_windows.go の RegisterClassExW で
@@ -49,36 +57,29 @@ const ownWindowClassName = "BunashimejiWindow"
 
 var (
 	whitelistMu sync.RWMutex
-	whitelist   = defaultWhitelist()
+	// 起動初期は全プリセット有効。main から ApplyWhitelistConfig() で
+	// ユーザ設定を反映するまでの暫定値。
+	whitelist = initialWhitelist()
 )
 
-// defaultWhitelist は出荷時のホワイトリスト。
-// よく使うウィンドウだけ最小限。ユーザは将来 conf/windows.json (仮) で
-// 上書きできる予定。詳細は docs/window-whitelist.md 参照。
-func defaultWhitelist() []WindowMatcher {
-	return []WindowMatcher{
-		// メモ帳 (動作確認用、最小・確実にマッチする)
-		{ClassContains: "Notepad"},
-		// Chromium ベース (Chrome / Edge / Brave / Opera 等)
-		{ClassContains: "Chrome_WidgetWin_1"},
-		// Firefox
-		{ClassContains: "MozillaWindowClass"},
-		// Windows Terminal
-		{ClassContains: "CASCADIA_HOSTING_WINDOW_CLASS"},
-		// 旧コンソール (cmd.exe 等)
-		{ClassContains: "ConsoleWindowClass"},
-		// VS Code (Code.exe; Chrome_WidgetWin_1 で既にカバー済みだが title でも明示)
-		{TitleContains: "Visual Studio Code"},
+func initialWhitelist() []WindowMatcher {
+	presets := Presets()
+	out := make([]WindowMatcher, 0, len(presets))
+	for _, p := range presets {
+		out = append(out, p.Matcher)
 	}
+	return out
 }
 
 // SetWhitelist はホワイトリストを差し替える。
-// 将来 config ファイルからロードする際のエントリポイント。
+// config ファイルからロードする際のエントリポイント。
 // nil または空スライスを渡すとホワイトリストが無効化され、ActiveWindow.Visible は常に false。
 func SetWhitelist(matchers []WindowMatcher) {
 	whitelistMu.Lock()
 	defer whitelistMu.Unlock()
 	whitelist = append([]WindowMatcher{}, matchers...)
+	// キャッシュを無効化して次回呼び出しで再評価
+	awCacheTime = time.Time{}
 }
 
 // Whitelist は現在のホワイトリストのコピーを返す (デバッグ用)。
@@ -91,16 +92,25 @@ func Whitelist() []WindowMatcher {
 }
 
 var (
-	procGetForegroundWindow  = user32.NewProc("GetForegroundWindow")
-	procGetWindowRect        = user32.NewProc("GetWindowRect")
-	procGetClassNameW        = user32.NewProc("GetClassNameW")
-	procGetWindowTextW       = user32.NewProc("GetWindowTextW")
-	procGetWindowTextLengthW = user32.NewProc("GetWindowTextLengthW")
-	procIsWindowVisible      = user32.NewProc("IsWindowVisible")
-	procIsIconic             = user32.NewProc("IsIconic")
-	procIsZoomed             = user32.NewProc("IsZoomed")
-	procIsWindow             = user32.NewProc("IsWindow")
+	procGetForegroundWindow       = user32.NewProc("GetForegroundWindow")
+	procGetWindowRect             = user32.NewProc("GetWindowRect")
+	procGetClassNameW             = user32.NewProc("GetClassNameW")
+	procGetWindowTextW            = user32.NewProc("GetWindowTextW")
+	procGetWindowTextLengthW      = user32.NewProc("GetWindowTextLengthW")
+	procIsWindowVisible           = user32.NewProc("IsWindowVisible")
+	procIsIconic                  = user32.NewProc("IsIconic")
+	procIsZoomed                  = user32.NewProc("IsZoomed")
+	procIsWindow                  = user32.NewProc("IsWindow")
+	procGetWindowThreadProcessId  = user32.NewProc("GetWindowThreadProcessId")
+	procOpenProcess               = kernel32.NewProc("OpenProcess")
+	procCloseHandle               = kernel32.NewProc("CloseHandle")
+	procQueryFullProcessImageName = kernel32.NewProc("QueryFullProcessImageNameW")
 )
+
+// OpenProcess に渡すアクセス権。PROCESS_QUERY_LIMITED_INFORMATION (0x1000) は
+// Vista 以降で他プロセスの exe path 取得に必要十分かつ最小権限。
+// PROCESS_QUERY_INFORMATION (0x0400) より制限が緩く UAC 越えにも比較的強い。
+const processQueryLimitedInformation uintptr = 0x1000
 
 // GetActiveWindow へのキャッシュ。
 // 1 tick (40ms) のうちに N 体のマスコットが env.Refresh() するたびに syscall を打つのを避ける。
@@ -139,8 +149,9 @@ func computeActiveWindow() ActiveWindow {
 		return ActiveWindow{} // 自分のマスコットウィンドウは除外
 	}
 	title := getWindowText(hwnd)
+	exe := getProcessExeName(hwnd) // 失敗時は "" (UAC 越えや system プロセスで起こりうる)
 
-	if !matchesWhitelist(className, title) {
+	if !matchesWhitelist(className, title, exe) {
 		return ActiveWindow{}
 	}
 
@@ -155,22 +166,27 @@ func computeActiveWindow() ActiveWindow {
 		ID:        hwnd,
 		ClassName: className,
 		Title:     title,
+		Exe:       exe,
 	}
 }
 
-func matchesWhitelist(className, title string) bool {
+func matchesWhitelist(className, title, exe string) bool {
 	whitelistMu.RLock()
 	defer whitelistMu.RUnlock()
 	cn := strings.ToLower(className)
 	tt := strings.ToLower(title)
+	ex := strings.ToLower(exe)
 	for _, m := range whitelist {
-		if m.ClassContains == "" && m.TitleContains == "" {
-			continue // 両方空のエントリは無効
+		if m.IsZero() {
+			continue // 全フィールド空のエントリは無効
 		}
 		if m.ClassContains != "" && !strings.Contains(cn, strings.ToLower(m.ClassContains)) {
 			continue
 		}
 		if m.TitleContains != "" && !strings.Contains(tt, strings.ToLower(m.TitleContains)) {
+			continue
+		}
+		if m.ExeEquals != "" && ex != strings.ToLower(m.ExeEquals) {
 			continue
 		}
 		return true
@@ -256,6 +272,48 @@ func GetExternalWindowRect(hwnd uintptr) (image.Rectangle, bool) {
 		return image.Rectangle{}, false
 	}
 	return image.Rect(int(r.Left), int(r.Top), int(r.Right), int(r.Bottom)), true
+}
+
+// getProcessExeName は hwnd を所有するプロセスの実行ファイル basename を返す
+// (例: `C:\Program Files\Google\Chrome\Application\chrome.exe` → `chrome.exe`)。
+// 取得失敗 (UAC 越え・終了済み等) は空文字列。
+//
+// 3 段階の syscall:
+//   1. GetWindowThreadProcessId(hwnd, &pid)
+//   2. OpenProcess(QUERY_LIMITED_INFORMATION, false, pid) → handle
+//   3. QueryFullProcessImageNameW(handle, 0, buf, &len) → full path
+//
+// QueryFullProcessImageNameW は GetModuleFileNameEx 系より UAC・WOW64 越境に
+// 強く、QUERY_LIMITED_INFORMATION (Vista+) で済む。
+func getProcessExeName(hwnd uintptr) string {
+	var pid uint32
+	procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	if pid == 0 {
+		return ""
+	}
+	h, _, _ := procOpenProcess.Call(processQueryLimitedInformation, 0, uintptr(pid))
+	if h == 0 {
+		return ""
+	}
+	defer procCloseHandle.Call(h)
+
+	var buf [windows.MAX_PATH]uint16
+	size := uint32(len(buf))
+	ret, _, _ := procQueryFullProcessImageName.Call(
+		h,
+		0, // dwFlags=0 → Win32 path
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&size)),
+	)
+	if ret == 0 {
+		return ""
+	}
+	full := windows.UTF16ToString(buf[:size])
+	// basename だけ返す (パスは比較に使わない)
+	if i := strings.LastIndexAny(full, `\/`); i >= 0 {
+		return full[i+1:]
+	}
+	return full
 }
 
 func getWindowText(hwnd uintptr) string {

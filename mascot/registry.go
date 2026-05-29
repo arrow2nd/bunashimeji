@@ -68,6 +68,32 @@ func (r *BroadcastRegistry) Unregister(e *BroadcastEntry) {
 	}
 }
 
+// UnregisterMascot は m が所有する Broadcast 公示をすべて取り除く。
+// Mascot 強制破棄 (tray「1体にする」/ ctx メニュー「他を消す」/ Transform) で呼び、
+// Broadcast Action の通常終了パスを通らずに死んだケースで registry.entries に
+// *Mascot 参照が残るのを防ぐ。
+//
+// 各 entry に Cancelled=true を立てるので、その entry を CachedParams に握っている
+// ScanMove 側は次 tick の `if target.Cancelled` 早期終了で正常にクリーンアップされる。
+func (r *BroadcastRegistry) UnregisterMascot(m *Mascot) {
+	if r == nil || m == nil {
+		return
+	}
+	kept := r.entries[:0]
+	for _, e := range r.entries {
+		if e.Mascot == m {
+			e.Cancelled = true
+			continue
+		}
+		kept = append(kept, e)
+	}
+	// 縮んだぶんの末尾スロットに残った *BroadcastEntry を GC 対象にするため明示的に nil クリア。
+	for i := len(kept); i < len(r.entries); i++ {
+		r.entries[i] = nil
+	}
+	r.entries = kept
+}
+
 // FindNearest は affordance 一致 & 未到着 の entry のうち、from に最も近いものを返す。
 // 該当なしなら nil。except に同一 Mascot を渡すと自分自身を除外する (自己ハンドシェイク防止)。
 func (r *BroadcastRegistry) FindNearest(affordance string, from image.Point, except *Mascot) *BroadcastEntry {

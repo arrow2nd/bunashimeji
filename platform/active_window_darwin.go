@@ -14,12 +14,19 @@ type ActiveWindow struct {
 	ID        uintptr
 	ClassName string
 	Title     string
+	Exe       string
 }
 
 // WindowMatcher は darwin ではスタブ (使われない)。
 type WindowMatcher struct {
 	ClassContains string
 	TitleContains string
+	ExeEquals     string
+}
+
+// IsZero は全フィールド空かを返す。darwin では使われないがビルドのため。
+func (m WindowMatcher) IsZero() bool {
+	return m.ClassContains == "" && m.TitleContains == "" && m.ExeEquals == ""
 }
 
 // GetActiveWindow は darwin では常に空 (Visible=false) を返す。

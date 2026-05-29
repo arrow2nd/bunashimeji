@@ -26,6 +26,12 @@ type Action struct {
 	// Breed (Class="Breed") の生成子 Mascot が起動する Behavior 名。生文字列。
 	// BornX / BornY は式評価が必要なので Params 経由 (stepBreed が EvalInt する)。
 	BornBehavior string
+
+	// Transform (Class="Transform") 用の生文字列属性。
+	// TransformMascot: 変身先キャラ名 (例: "Nagi")。stepTransform が Spawner.Transform へ渡す。
+	// TransformBehavior: 変身先キャラの起動 Behavior 名。"TransformBehaviour" (英) もエイリアス。
+	TransformMascot   string
+	TransformBehavior string
 }
 
 type Animation struct {
