@@ -66,6 +66,10 @@ var (
 	configMu   sync.RWMutex
 	currentCfg WhitelistConfig
 	configPath string
+
+	// saveMu はファイル保存を直列化する。configMu とは独立で、ファイル I/O 中に
+	// configMu を長時間保持しないための分離。
+	saveMu sync.Mutex
 )
 
 // LoadWhitelistConfig は path の JSON を読んで WhitelistConfig を返す。
@@ -98,12 +102,22 @@ func SaveWhitelistConfig(path string, cfg WhitelistConfig) error {
 	}
 	data = append(data, '\n')
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".windows.json.tmp.*")
+	if err != nil {
+		return fmt.Errorf("create tmp: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("write tmp: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("close tmp: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("rename: %w", err)
 	}
 	return nil
@@ -173,14 +187,10 @@ func TogglePreset(presetID string, enabled bool) error {
 		cfg.DisabledPresets = append(cfg.DisabledPresets, presetID)
 	}
 	currentCfg = cfg
-	path := configPath
 	configMu.Unlock()
 
 	applyCurrentConfigToWhitelist()
-	if path == "" {
-		return nil
-	}
-	return SaveWhitelistConfig(path, cfg)
+	return saveCurrentConfig()
 }
 
 // ToggleUserEntry は config.Windows[idx] の Enabled を上書きする。
@@ -195,10 +205,22 @@ func ToggleUserEntry(idx int, enabled bool) error {
 	b := enabled
 	cfg.Windows[idx].Enabled = &b
 	currentCfg = cfg
-	path := configPath
 	configMu.Unlock()
 
 	applyCurrentConfigToWhitelist()
+	return saveCurrentConfig()
+}
+
+// saveCurrentConfig は最新の currentCfg をファイルに保存する。
+// saveMu で直列化し、保存直前に currentCfg を re-read することで、並行 toggle 時に
+// 古いスナップショットが最新を上書きする問題を防ぐ。
+func saveCurrentConfig() error {
+	saveMu.Lock()
+	defer saveMu.Unlock()
+	configMu.RLock()
+	cfg := cloneConfig(currentCfg)
+	path := configPath
+	configMu.RUnlock()
 	if path == "" {
 		return nil
 	}
