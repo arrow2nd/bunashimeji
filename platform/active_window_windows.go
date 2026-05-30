@@ -82,15 +82,6 @@ func SetWhitelist(matchers []WindowMatcher) {
 	awCacheTime = time.Time{}
 }
 
-// Whitelist は現在のホワイトリストのコピーを返す (デバッグ用)。
-func Whitelist() []WindowMatcher {
-	whitelistMu.RLock()
-	defer whitelistMu.RUnlock()
-	out := make([]WindowMatcher, len(whitelist))
-	copy(out, whitelist)
-	return out
-}
-
 var (
 	procGetForegroundWindow       = user32.NewProc("GetForegroundWindow")
 	procGetWindowRect             = user32.NewProc("GetWindowRect")
@@ -279,9 +270,9 @@ func GetExternalWindowRect(hwnd uintptr) (image.Rectangle, bool) {
 // 取得失敗 (UAC 越え・終了済み等) は空文字列。
 //
 // 3 段階の syscall:
-//   1. GetWindowThreadProcessId(hwnd, &pid)
-//   2. OpenProcess(QUERY_LIMITED_INFORMATION, false, pid) → handle
-//   3. QueryFullProcessImageNameW(handle, 0, buf, &len) → full path
+//  1. GetWindowThreadProcessId(hwnd, &pid)
+//  2. OpenProcess(QUERY_LIMITED_INFORMATION, false, pid) → handle
+//  3. QueryFullProcessImageNameW(handle, 0, buf, &len) → full path
 //
 // QueryFullProcessImageNameW は GetModuleFileNameEx 系より UAC・WOW64 越境に
 // 強く、QUERY_LIMITED_INFORMATION (Vista+) で済む。

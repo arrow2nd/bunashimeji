@@ -205,40 +205,6 @@ type behaviorCand struct {
 	w int
 }
 
-// CandidateInfo はデバッグ HUD で表示する次回抽選候補の 1 件。
-type CandidateInfo struct {
-	Name   string
-	Weight int
-	Source string // "root" / "cond" / "next"
-}
-
-// CurrentCandidates は次に advanceBehavior が引くであろう候補集合を返す (デバッグ用)。
-// pickNextBehavior と同じ集計ロジックを使う。
-func (m *Mascot) CurrentCandidates() []CandidateInfo {
-	var out []CandidateInfo
-	add := func(cs []behaviorCand, src string) {
-		for _, c := range cs {
-			out = append(out, CandidateInfo{Name: c.b.Name, Weight: c.w, Source: src})
-		}
-	}
-	if m.pendingReplace {
-		add(m.refsToCands(m.pendingNext), "next")
-		return out
-	}
-	add(m.behaviorsToCands(m.Behaviors), "root")
-	for _, g := range m.ConditionGroups {
-		ok, err := g.Condition.EvalBool(m.vm, nil)
-		if err != nil || !ok {
-			continue
-		}
-		add(m.behaviorsToCands(g.Behaviors), "cond")
-	}
-	if len(m.pendingNext) > 0 {
-		add(m.refsToCands(m.pendingNext), "next")
-	}
-	return out
-}
-
 // behaviorsToCands は通常抽選用 (ルート or Condition グループ内) の候補リストを作る。
 // Frequency=0 と Condition false は除外。
 func (m *Mascot) behaviorsToCands(behaviors []*Behavior) []behaviorCand {

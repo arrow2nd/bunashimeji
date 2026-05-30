@@ -133,13 +133,6 @@ func InstallWhitelistConfig(path string, cfg WhitelistConfig) {
 	applyCurrentConfigToWhitelist()
 }
 
-// CurrentWhitelistConfig は現行の config のコピーを返す。
-func CurrentWhitelistConfig() WhitelistConfig {
-	configMu.RLock()
-	defer configMu.RUnlock()
-	return cloneConfig(currentCfg)
-}
-
 // EffectiveEntries はプリセット + ユーザ追加分を tray 表示用に並べて返す。
 // プリセットが先、ユーザ追加分が後。プリセットの順序は Presets() の宣言順を保つ。
 func EffectiveEntries() []WhitelistEntry {

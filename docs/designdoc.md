@@ -10,7 +10,7 @@ shimeji-ee (Kilkakon版) 互換のデスクトップマスコットを Go で自
 - **対応フォーマット:** shimeji-ee (Kilkakon版) の actions.xml / behaviors.xml +
   オリジナルの 行動.xml / 動作.xml
 - **画像規約:** `shime1.png 〜 shime46.png` 形式（キャラごとに揃っている前提）
-- **ターゲットOS:** Windows 優先、macOS は将来対応 (現状はスタブ)
+- **ターゲットOS:** Windows 専用
 - **配布形式:** シングルバイナリ
 
 ## 技術スタック
@@ -19,7 +19,7 @@ shimeji-ee (Kilkakon版) 互換のデスクトップマスコットを Go で自
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
 | 描画・ウィンドウ・ゲームループ | Win32 API 直叩き (`UpdateLayeredWindow` + `MsgWaitForMultipleObjects` + `SetWindowRgn`)                           |
 | Win32 API バインディング       | `golang.org/x/sys/windows` + 手動 syscall (CGo なし)                                                              |
-| タスクバー常駐 (system tray)   | [`fyne.io/systray`](https://github.com/fyne-io/systray) (Windows ビルドのみ; 非 Windows は no-op スタブ)          |
+| タスクバー常駐 (system tray)   | [`fyne.io/systray`](https://github.com/fyne-io/systray)                                                           |
 | 条件式評価                     | [`github.com/dop251/goja`](https://github.com/dop251/goja) (JavaScript エンジン、同キャラ全個体で 1 Runtime 共有) |
 | XML パース                     | `encoding/xml` (標準ライブラリ)                                                                                   |
 | PNG デコード                   | `image/png` (標準ライブラリ)                                                                                      |
@@ -46,7 +46,6 @@ bunashimeji/
 ├── main.go                       # エントリポイント: 全キャラを単一プロセスで束ねる
 │                                 # spawner / Character / ctx メニュー / tray ブリッジを束ねる
 ├── tray_windows.go               # システムトレイ (fyne.io/systray) を別 goroutine で起動
-├── tray_other.go                 # 非 Windows 向け no-op スタブ
 ├── mascot/
 │   ├── mascot.go                 # Mascot 構造・Tick・割り込み・ウィンドウ追従・グラブ駆動
 │   ├── types.go                  # Action / Behavior / Pose / ActionState 等の型定義
@@ -65,14 +64,10 @@ bunashimeji/
 │   └── xml_legacy.go             # 旧日本語版 XML の属性名・要素名を英語版へ正規化
 └── platform/
     ├── window_windows.go         # Win32 透過 layered window + メッセージループ + モニタ列挙
-    ├── window_darwin.go          # macOS スタブ (errors.New を返す)
     ├── active_window_windows.go  # GetForegroundWindow + ホワイトリストマッチ + exe 名取得 + 外部ウィンドウ移動
-    ├── active_window_darwin.go   # macOS スタブ
     ├── window_whitelist.go       # conf/windows.json のロード/セーブ、プリセット + ユーザ追加の統合ビュー、tray 用 toggle API
     ├── preset_windows.go         # 「投げて遊べる」アプリのプリセット一覧 (ブラウザ・電卓・メモ帳等)
-    ├── preset_darwin.go          # macOS スタブ (空)
-    ├── menu_windows.go           # TrackPopupMenu ラッパ (ctx メニュー)
-    └── menu_darwin.go            # macOS スタブ (常に 0 を返す)
+    └── menu_windows.go           # TrackPopupMenu ラッパ (ctx メニュー)
 ```
 
 ### 実行時アセット (実行ファイルと同階層)
@@ -134,7 +129,8 @@ img/
 - **キャラ右クリックメニュー** — `TrackPopupMenu`
   直叩き。「このしめじだけ残す」「もう1匹呼ぶ」「帰ってもらう」「アクションを選んで再生」(全
   Action 名をアルファベット順サブメニュー)。chars / window 破棄は tick
-  冒頭のミューテーションキュー経由で main thread に集約する
+  冒頭のミューテーションキュー経由で main thread に集約する。
+  任意アクション再生は、XML 互換確認や特定アニメーションを直接見たい利用に応える通常機能として残す
 - **CLI フラグ** — `-name`, `-conf` (既定 `conf`), `-img` (既定 `img`),
   `-windows-config` (既定 `[conf]/windows.json`), `-debug` (Behavior/Action
   遷移ログ), `-trace-affordance` (Broadcast/ScanMove イベントのみログ)

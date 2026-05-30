@@ -122,22 +122,6 @@ type Mascot struct {
 	maxCount     int
 }
 
-// LoadCharacter はキャラ名から Mascot を構築する。
-// confRoot/imgRoot はそれぞれ "conf"/"img" 等のディレクトリを想定。
-// registry は複数 Mascot 間の Broadcast/ScanMove ハンドシェイクに使う共有レジストリ。
-// nil を渡すと Broadcast/ScanMove は no-op となる (テスト・単独動作確認用)。
-//
-// この関数は CharacterTemplate + NewInstance の薄いラッパで、後方互換のために残す。
-// 同キャラ複数体 (Breed 経由含む) を起動する場合は LoadCharacterTemplate を 1 回呼んで
-// テンプレートをキャッシュし、その後 NewInstance を繰り返す方が効率的。
-func LoadCharacter(confRoot, imgRoot, name string, registry *BroadcastRegistry) (*Mascot, error) {
-	tpl, err := LoadCharacterTemplate(confRoot, imgRoot, name)
-	if err != nil {
-		return nil, err
-	}
-	return tpl.NewInstance(registry, nil, nil, InstanceOpts{}), nil
-}
-
 // Tick は 1 フレーム分の状態更新を行う。
 // runtime.md の処理順序: 環境更新 → ウィンドウ追従 → 割り込み → Action.Update → Behavior 遷移。
 // 描画は render 層が CurrentImage / ImageAnchor を参照する。
@@ -285,10 +269,6 @@ func (m *Mascot) clearGrab() {
 	m.grabbedOffset = image.Point{}
 }
 
-// GrabbedHWND は現在グラブ中の外部ウィンドウ HWND を返す (0 なら非グラブ中)。
-// step 関数からの参照用。
-func (m *Mascot) GrabbedHWND() uintptr { return m.grabbedHWND }
-
 // GrabbedOffset は (window.Rect.Min - anchor) の差分を返す。
 func (m *Mascot) GrabbedOffset() image.Point { return m.grabbedOffset }
 
@@ -358,9 +338,6 @@ func (m *Mascot) DragOffset() image.Point { return m.dragOffset }
 
 // Env は内部の Environment への参照を返す (read-only 用途)。
 func (m *Mascot) Env() *Environment { return m.env }
-
-// VM は goja Runtime を返す (Action/Behavior から使用)。
-func (m *Mascot) VM() *goja.Runtime { return m.vm }
 
 // refreshVM は goja に最新の mascot オブジェクトをセットする。
 // jsScratch を初回構築し、以後は値だけ書き換えて再利用することで

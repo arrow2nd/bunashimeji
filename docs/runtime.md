@@ -395,6 +395,8 @@ SetWindowRgn(hrgn)          : alpha>0 領域のみクリック対象 (透明部�
 - 「帰ってもらう」 → `removeOne(target)` (chars 空になったら `cancel()`)
 - 「アクションを選んで再生」サブメニュー → `PlayActionByName(name)` (同名 Behavior があれば startBehavior、無ければ CurrentAction だけ差し替え)
 
+「アクションを選んで再生」はデバッグ専用ではなく、XML 内の特定アクションをユーザーが直接再生したいケースに応える通常機能として常時表示する。
+
 選択結果は `queueMutation` 経由で main thread のキューに積み、次 tick 冒頭の `drainMutations` で実行する。`DestroyWindow` を作成スレッド以外から呼ぶと失敗するため、変更を必ず main thread に集約する目的。
 
 ### システムトレイ
@@ -429,7 +431,7 @@ for {
 
 ## platform/ レイヤ
 
-OS 依存処理は同一パッケージで `GOOS` ビルドタグで切り替え。`darwin` 側は Win32 系・activeIE・コンテキストメニューをスタブ化して package のクロスコンパイル可能性のみ維持。
+OS 依存処理は Windows 専用。`platform/` は Win32 API 前提で、非 Windows 向けスタブは持たない。
 
 ### Windows で使用する API
 
@@ -504,7 +506,6 @@ type WindowMatcher struct {
 }
 func GetActiveWindow() ActiveWindow   // 30ms キャッシュ付き
 func SetWhitelist(matchers []WindowMatcher)
-func Whitelist() []WindowMatcher
 
 // 外部ウィンドウ駆動 (WalkWithIE / FallWithIE / ThrowIE)
 func MoveExternalWindow(hwnd uintptr, x, y int) error
