@@ -21,7 +21,7 @@
 
 ## 使いかた
 
-1. アーティファクトのリリースからexeをダウンロード
+1. [リリース](https://github.com/arrow2nd/bunashimeji/releases/latest)からzipをダウンロード
 2. zipを展開して、中にある `/img` と `/conf` に追加したいしめじのフォルダを配置
    - 画像一式を `/img/[キャラ名]/`、`Actions.xml` と `Behavior.xml` (もしくは
      `動作.xml` と `行動.xml`) を `/conf/[キャラ名]/` の下に置きます
