@@ -3,3 +3,4 @@
 .claude/settings*.json
 img/
 conf/
+dist/

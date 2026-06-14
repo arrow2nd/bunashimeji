@@ -8,7 +8,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 # log.Printf の出力先 (stderr) は消えるので、ログを見たい場合は build-console を使う。
 LDFLAGS := -H=windowsgui -X main.version=$(VERSION)
 
-.PHONY: all test build build-console run clean
+.PHONY: all test build build-console run dist clean
 
 all: test build
 
@@ -25,5 +25,10 @@ build-console:
 run: build-console
 	./$(BINARY) -name Anzu
 
+# 配布用 zip を dist/ に作る。GOOS=windows でクロスコンパイルする。
+dist:
+	VERSION=$(VERSION) ./scripts/dist.sh
+
 clean:
 	rm -f $(BINARY)
+	rm -rf dist
