@@ -25,6 +25,10 @@ import (
 // XML の Velocity / Gravity / Duration は 25 TPS 前提で書かれている。
 const tickInterval = 40 * time.Millisecond
 
+// version は -ldflags "-X main.version=..." で注入される。未指定時は "dev"。
+// tray の title/tooltip に表示してビルド識別に使う。
+var version = "dev"
+
 func main() {
 	var (
 		nameFlag      string

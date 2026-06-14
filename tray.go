@@ -39,8 +39,9 @@ func startTray(cb TrayCallbacks) {
 	go func() {
 		runtime.LockOSThread()
 		systray.Run(func() {
-			systray.SetTitle("ぶなしめじ")
-			systray.SetTooltip("ぶなしめじ")
+			label := fmt.Sprintf("ぶなしめじ %s", version)
+			systray.SetTitle(label)
+			systray.SetTooltip(label)
 			if ico, err := pngToICO(trayIconPNG); err != nil {
 				log.Printf("tray icon: %v", err)
 			} else {
