@@ -81,7 +81,7 @@ activeIE のいずれかの辺 (top / bottom / left / right) にくっついて�
 
 ## 出荷時プリセット
 
-[platform/preset_windows.go](../platform/preset_windows.go) の `Presets()` にハードコード。「投げて遊んでも作業に支障の出にくい」アプリだけに絞ってある。
+[platform/preset.go](../platform/preset.go) の `Presets()` にハードコード。「投げて遊んでも作業に支障の出にくい」アプリだけに絞ってある。
 
 | ID | Label | マッチ条件 | 備考 |
 | --- | --- | --- | --- |

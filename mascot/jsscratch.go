@@ -21,6 +21,11 @@ type jsScratch struct {
 	ceilingY      int
 	leftWallX     int
 	rightWallX    int
+	// leftWallReal / rightWallReal は「その辺が本当の壁か」(隣に WorkArea が続いてい
+	// ないか) を保持する。マルチモニタ境界では false になり、XML 側の
+	// workArea.leftBorder.isOn / wall.left.isOn 等が壁判定を抑止する。
+	leftWallReal  bool
+	rightWallReal bool
 	activeIE      image.Rectangle
 	activeVisible bool
 
@@ -59,9 +64,15 @@ func newJSScratch() *jsScratch {
 	s.cursor = map[string]any{"x": 0, "y": 0, "dx": 0, "dy": 0}
 
 	// --- workArea/screen の borders ---
+	// leftBorder/rightBorder.isOn はマルチモニタ境界 (隣に WorkArea が続いている辺) を
+	// 壁としてカウントしない。これがないと「On the Wall」条件がモニタ境界で誤発火し、
+	// 存在しない壁に貼りつく挙動になる。
 	s.screenLeft = map[string]any{
 		"value": 0, "x": 0,
 		"isOn": func(p any) bool {
+			if !s.leftWallReal {
+				return false
+			}
 			pt := pointFromAny(p)
 			return abs(pt.X-s.screen.Min.X) <= borderTolerance
 		},
@@ -69,6 +80,9 @@ func newJSScratch() *jsScratch {
 	s.screenRight = map[string]any{
 		"value": 0, "x": 0,
 		"isOn": func(p any) bool {
+			if !s.rightWallReal {
+				return false
+			}
 			pt := pointFromAny(p)
 			return abs(pt.X-s.screen.Max.X) <= borderTolerance
 		},
@@ -117,6 +131,9 @@ func newJSScratch() *jsScratch {
 	s.leftMap = map[string]any{
 		"value": 0, "x": 0,
 		"isOn": func(p any) bool {
+			if !s.leftWallReal {
+				return false
+			}
 			pt := pointFromAny(p)
 			return abs(pt.X-s.leftWallX) <= borderTolerance
 		},
@@ -124,6 +141,9 @@ func newJSScratch() *jsScratch {
 	s.rightMap = map[string]any{
 		"value": 0, "x": 0,
 		"isOn": func(p any) bool {
+			if !s.rightWallReal {
+				return false
+			}
 			pt := pointFromAny(p)
 			return abs(pt.X-s.rightWallX) <= borderTolerance
 		},
@@ -133,8 +153,13 @@ func newJSScratch() *jsScratch {
 		"right": s.rightMap,
 		"isOn": func(p any) bool {
 			pt := pointFromAny(p)
-			return abs(pt.X-s.leftWallX) <= borderTolerance ||
-				abs(pt.X-s.rightWallX) <= borderTolerance
+			if s.leftWallReal && abs(pt.X-s.leftWallX) <= borderTolerance {
+				return true
+			}
+			if s.rightWallReal && abs(pt.X-s.rightWallX) <= borderTolerance {
+				return true
+			}
+			return false
 		},
 	}
 
@@ -227,6 +252,9 @@ func (s *jsScratch) update(m *Mascot, env *Environment, totalCount int) {
 	s.ceilingY = env.Ceiling(m.Anchor)
 	s.leftWallX = s.screen.Min.X
 	s.rightWallX = s.screen.Max.X
+	// マルチモニタ境界 (隣に別 WorkArea が続く辺) は壁ではないので isOn を抑止する。
+	s.leftWallReal = !env.hasAdjacentScreen(m.Anchor, true)
+	s.rightWallReal = !env.hasAdjacentScreen(m.Anchor, false)
 
 	// anchor
 	s.anchor["x"] = m.Anchor.X

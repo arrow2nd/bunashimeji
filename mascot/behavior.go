@@ -50,23 +50,6 @@ func actionContainsAir(a *Action, visited map[*Action]bool) bool {
 //  2. forcedNext (ScanMove 到着時にセットされる強制遷移)
 //  3. 空中 → Fall
 func (m *Mascot) checkInterrupt() *Behavior {
-	// notifyAffordanceInterrupt は進行中の Broadcast/ScanMove Action がある時に
-	// 「何で中断されたか」を OnAffordance に通知する。これがないと Drag/Fall 等で
-	// アフォーダンス Action が破棄されても終了ログが出ず、観測者から見て
-	// 「結末不明なハンドシェイク」になってしまう。
-	notifyAffordanceInterrupt := func(reason string) {
-		if m.CurrentAction == nil || m.CurrentAction.Action == nil || m.OnAffordance == nil {
-			return
-		}
-		a := m.CurrentAction.Action
-		switch a.Class {
-		case "Broadcast":
-			m.OnAffordance("broadcast-interrupted", a.Affordance, reason)
-		case "ScanMove":
-			m.OnAffordance("scanmove-interrupted", a.Affordance, reason)
-		}
-	}
-
 	switch m.Drag {
 	case DragStarted:
 		// ドラッグ開始 → Dragged Behavior に遷移、状態は Holding に進める
@@ -74,7 +57,6 @@ func (m *Mascot) checkInterrupt() *Behavior {
 		m.forcedNext = nil // 掴まれたら会話ハンドシェイクは破棄
 		m.clearGrab()      // WalkWithIE 等で掴んでいた外部ウィンドウは解放
 		if b, ok := m.findBehaviorByRole("Dragged"); ok {
-			notifyAffordanceInterrupt("Dragged")
 			return b
 		}
 	case DragReleased:
@@ -89,13 +71,10 @@ func (m *Mascot) checkInterrupt() *Behavior {
 			m.LookRight = dx > 0
 		}
 		if b, ok := m.findBehaviorByRole("Thrown"); ok {
-			notifyAffordanceInterrupt("Thrown")
 			return b
 		}
 	}
 	// forcedNext (ScanMove 到着 → 双方の Behavior 強制遷移) を優先。
-	// これは ScanMove 自身が成立して投げているフラグなので interrupted 扱いしない
-	// (既に scanmove-arrived / broadcast-arrived がログ済)。
 	if m.forcedNext != nil {
 		next := m.forcedNext
 		m.forcedNext = nil
@@ -114,7 +93,6 @@ func (m *Mascot) checkInterrupt() *Behavior {
 			return nil
 		}
 		if b, ok := m.findBehaviorByRole("Fall"); ok {
-			notifyAffordanceInterrupt("Fall")
 			return b
 		}
 	}

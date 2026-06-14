@@ -19,7 +19,7 @@
 
 [main.go](../main.go) の流れ:
 
-1. CLI フラグ解析: `-name` (キャラ名、空なら `img/` 全キャラ)、`-conf`、`-img`、`-debug`、`-trace-affordance`
+1. CLI フラグ解析: `-name` (キャラ名、空なら `img/` 全キャラ)、`-conf`、`-img`、`-windows-config`
 2. `runtime.LockOSThread()` でメインスレッド固定
 3. SIGINT / SIGTERM → `context.Cancel` のシグナル goroutine を起動
 4. `BroadcastRegistry` を 1 個作成し、対象キャラの `CharacterTemplate` をロード
@@ -99,14 +99,6 @@ type Mascot struct {
     CurrentAction   *ActionState
     pendingNext     []BehaviorRef
     pendingReplace  bool
-
-    BehaviorHistory []string      // デバッグ HUD 用 (新しい順)
-
-    // デバッグコールバック (-debug / -trace-affordance で wire される)
-    OnBehaviorChange func(name string)
-    OnActionEnter    func(name, atype string)
-    OnMoveStart      func(name string, target, anchor image.Point)
-    OnAffordance     func(event, affordance, detail string)
 
     Images       map[string]image.Image
     CurrentImage image.Image
@@ -213,8 +205,6 @@ func (e *Environment) IsAttachedToActiveWindow(anchor) bool // 4 辺いずれか
 | 3      | 空中にいる (床・壁・天井いずれにも接していない)       | `Fall` (ただし現 Behavior が `HandlesAir=true` ならスキップ)                       |
 
 `HandlesAir` は Action ツリーを走査して Embedded `Fall`/`Falling`/`Jump`/`Jumping` を含む Behavior に自動セットされる ([mascot/behavior.go](../mascot/behavior.go) `markAirHandlers`)。`Fall` / `Thrown` ロールの Behavior は明示的に true。
-
-Broadcast / ScanMove Action 進行中に Drag/Fall 等で中断された場合は `OnAffordance` に `*-interrupted` イベントを送って観測者から「結末不明」にならないようにする。
 
 ### 必須 Behavior の役割 (roleAliases)
 
@@ -401,7 +391,7 @@ SetWindowRgn(hrgn)          : alpha>0 領域のみクリック対象 (透明部�
 
 ### システムトレイ
 
-[tray_windows.go](../tray_windows.go) が `fyne.io/systray` を別 goroutine で起動 (`runtime.LockOSThread` で OS スレッドに固定 → systray の Win32 hidden window がメッセージを受けられる)。アイコンは `buna.png` を `pngToICO` で最小 ICO に包んで `SetIcon`。
+[tray.go](../tray.go) が `fyne.io/systray` を別 goroutine で起動 (`runtime.LockOSThread` で OS スレッドに固定 → systray の Win32 hidden window がメッセージを受けられる)。アイコンは `buna.png` を `pngToICO` で最小 ICO に包んで `SetIcon`。
 
 メニュー:
 
@@ -431,7 +421,7 @@ for {
 
 ## platform/ レイヤ
 
-OS 依存処理は Windows 専用 (実装)。`platform/` は Win32 API 前提だが、`*_darwin.go` で macOS 向けの no-op / error 返却スタブを併設し、`GOOS=darwin` でもパッケージとしてクロスコンパイルが通る状態を維持する (将来の macOS 対応用の土台で、現状は実機能なし)。
+OS 依存処理は Windows 専用。`platform/` は Win32 API (`golang.org/x/sys/windows` + `syscall` 直叩き) 前提で書かれており、`GOOS=windows` 以外ではビルドが通らない。クロスプラットフォーム対応は明示的にやらないため、macOS / Linux 向けのスタブ層は持たない。
 
 ### Windows で使用する API
 

@@ -245,9 +245,47 @@ func (e *Environment) IsOnCeiling(anchor image.Point) bool {
 }
 
 // IsOnWall は anchor.X が左右端に接しているか判定する。
+// マルチモニタ環境では、隣に別モニタの WorkArea が続いている辺は「壁ではない」
+// (マスコットは渡って歩ける) ので false を返す。タスクバー越しのモニタ間は WorkArea
+// が連続しないため壁扱い (= 渡れない) のままになる。
 func (e *Environment) IsOnWall(anchor image.Point) bool {
-	return abs(anchor.X-e.LeftWall(anchor)) <= borderTolerance ||
-		abs(anchor.X-e.RightWall(anchor)) <= borderTolerance
+	leftHit := abs(anchor.X-e.LeftWall(anchor)) <= borderTolerance
+	rightHit := abs(anchor.X-e.RightWall(anchor)) <= borderTolerance
+	if leftHit && !e.hasAdjacentScreen(anchor, true) {
+		return true
+	}
+	if rightHit && !e.hasAdjacentScreen(anchor, false) {
+		return true
+	}
+	return false
+}
+
+// hasAdjacentScreen は anchor 所属モニタの左 (leftSide=true) または右の隣に、
+// 別モニタの WorkArea が接続されているかを返す。Monitor 物理範囲ではなく WorkArea を
+// プローブ先にすることで、タスクバーがモニタ間に挟まる構成では「隣接無し」(= 真の壁)
+// と判定する。マスコットが歩けるのは WorkArea 上だけなので、これが「渡れる隣」の定義。
+func (e *Environment) hasAdjacentScreen(anchor image.Point, leftSide bool) bool {
+	cur := e.currentIndex(anchor)
+	if cur < 0 {
+		return false
+	}
+	wa := e.screens[cur].WorkArea
+	var probe image.Point
+	if leftSide {
+		probe = image.Point{X: wa.Min.X - 1, Y: anchor.Y}
+	} else {
+		// image.Rectangle の Max は排他的なので、wa.Max.X 自体が「1 px 外」相当。
+		probe = image.Point{X: wa.Max.X, Y: anchor.Y}
+	}
+	for i, s := range e.screens {
+		if i == cur {
+			continue
+		}
+		if probe.In(s.WorkArea) {
+			return true
+		}
+	}
+	return false
 }
 
 // pointFromAny は goja から渡される anchor (map または mascot.anchor 全体) を image.Point 化する。

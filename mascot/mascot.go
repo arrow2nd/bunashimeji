@@ -48,27 +48,6 @@ type Mascot struct {
 	pendingNext     []BehaviorRef // NextBehavior 由来の次回候補
 	pendingReplace  bool          // true なら通常抽選とマージせず pendingNext のみで決定
 
-	// BehaviorHistory は直近の Behavior 名 (新しい順)。デバッグ HUD 用。
-	BehaviorHistory []string
-
-	// OnBehaviorChange は新しい Behavior が開始されるたびに呼ばれる。
-	// HUD フォントが日本語を出せないため、コンソールログ出力用に外部から登録する。
-	OnBehaviorChange func(name string)
-
-	// OnActionEnter は新しい Action State が作られるたびに呼ばれる
-	// (Behavior の root Action + Sequence/Select の child)。デバッグログ用。
-	OnActionEnter func(name, atype string)
-
-	// OnMoveStart は Move Action 開始時の Target / 現在地を渡す。デバッグログ用。
-	OnMoveStart func(name string, target image.Point, anchor image.Point)
-
-	// OnAffordance は Broadcast / ScanMove ライフサイクルの主要イベントを通知する。
-	// event は "broadcast-start" / "broadcast-arrived" / "scanmove-found" /
-	// "scanmove-no-target" / "scanmove-arrived" / "scanmove-failed" のいずれか。
-	// affordance はハンドシェイクキー文字列、detail は補足情報 (相手キャラ名等)。
-	// アフォーダンスが実際に発火しているか追跡するためのデバッグ用。
-	OnAffordance func(event, affordance, detail string)
-
 	Images map[string]image.Image // /shime1.png 等の正規化済みパス → 画像
 
 	// 描画/ウィンドウ追従用 (render 層から参照)
@@ -306,7 +285,6 @@ func (m *Mascot) Cleanup() {
 	m.CurrentBehavior = nil
 	m.forcedNext = nil
 	m.pendingNext = nil
-	m.BehaviorHistory = nil
 	m.jsScratch = nil
 }
 
@@ -413,10 +391,6 @@ func (m *Mascot) startBehavior(b *Behavior) {
 	m.CurrentBehavior = b
 	m.pendingNext = nil
 	m.pendingReplace = false
-	m.pushHistory(b.Name)
-	if m.OnBehaviorChange != nil {
-		m.OnBehaviorChange(b.Name)
-	}
 	a, ok := m.Actions[b.Name]
 	if !ok {
 		log.Printf("warning: behavior %q has no matching action", b.Name)
@@ -425,16 +399,6 @@ func (m *Mascot) startBehavior(b *Behavior) {
 	}
 	m.CurrentAction = newActionState(a, m)
 	m.refreshPose()
-}
-
-// pushHistory は履歴の先頭 (最新) に名前を入れ、上限を超えたら末尾を捨てる。
-const behaviorHistoryMax = 6
-
-func (m *Mascot) pushHistory(name string) {
-	m.BehaviorHistory = append([]string{name}, m.BehaviorHistory...)
-	if len(m.BehaviorHistory) > behaviorHistoryMax {
-		m.BehaviorHistory = m.BehaviorHistory[:behaviorHistoryMax]
-	}
 }
 
 // advanceBehavior は現 Behavior 完了後の次状態を決める。

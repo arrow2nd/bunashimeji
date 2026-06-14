@@ -35,7 +35,7 @@ func main() {
 	fmt.Println("next: go run github.com/akavel/rsrc@latest -ico buna.ico -o rsrc_windows.syso")
 }
 
-// pngToICO は tray_windows.go と同じロジック。PNG を 1 エントリの ICO に包む。
+// pngToICO は tray.go と同じロジック。PNG を 1 エントリの ICO に包む。
 // Windows Vista 以降は ICO エントリに PNG を直接埋められる (BMP DIB に変換不要)。
 func pngToICO(pngBytes []byte) ([]byte, error) {
 	cfg, err := png.DecodeConfig(bytes.NewReader(pngBytes))

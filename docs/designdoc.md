@@ -10,7 +10,7 @@ shimeji-ee (Kilkakon版) 互換のデスクトップマスコットを Go で自
 - **対応フォーマット:** shimeji-ee (Kilkakon版) の actions.xml / behaviors.xml +
   オリジナルの 行動.xml / 動作.xml
 - **画像規約:** `shime1.png 〜 shime46.png` 形式（キャラごとに揃っている前提）
-- **ターゲットOS:** Windows 優先、macOS は将来対応 (現状は `//go:build darwin` のスタブのみでビルドが通る状態)
+- **ターゲットOS:** Windows 専用 (Win32 API 直叩きが約 1,400 行あり、抽象化の余地が無いためクロスプラットフォーム対応は明示的にやらない)
 - **配布形式:** シングルバイナリ
 
 ## 技術スタック
@@ -45,8 +45,7 @@ shimeji-ee (Kilkakon版) 互換のデスクトップマスコットを Go で自
 bunashimeji/
 ├── main.go                       # エントリポイント: 全キャラを単一プロセスで束ねる
 │                                 # spawner / Character / ctx メニュー / tray ブリッジを束ねる
-├── tray_windows.go               # システムトレイ (fyne.io/systray) を別 goroutine で起動
-├── tray_other.go                 # 非 Windows 向け no-op スタブ (`//go:build !windows`)
+├── tray.go                       # システムトレイ (fyne.io/systray) を別 goroutine で起動
 ├── mascot/
 │   ├── mascot.go                 # Mascot 構造・Tick・割り込み・ウィンドウ追従・グラブ駆動
 │   ├── types.go                  # Action / Behavior / Pose / ActionState 等の型定義
@@ -64,16 +63,16 @@ bunashimeji/
 │   ├── xml.go                    # actions.xml / behaviors.xml のパース、ActionReference 解決
 │   └── xml_legacy.go             # 旧日本語版 XML の属性名・要素名を英語版へ正規化
 └── platform/
-    ├── window_windows.go         # Win32 透過 layered window + メッセージループ + モニタ列挙
-    ├── window_darwin.go          # macOS スタブ (Win32Window/Screens/PumpMessages 等を no-op / error 化)
-    ├── active_window_windows.go  # GetForegroundWindow + ホワイトリストマッチ + exe 名取得 + 外部ウィンドウ移動
-    ├── active_window_darwin.go   # macOS スタブ (activeIE 系を全て空値 / no-op で返す)
+    ├── window.go                 # Win32 透過 layered window + メッセージループ + モニタ列挙
+    ├── active_window.go          # GetForegroundWindow + ホワイトリストマッチ + exe 名取得 + 外部ウィンドウ移動
     ├── window_whitelist.go       # conf/windows.json のロード/セーブ、プリセット + ユーザ追加の統合ビュー、tray 用 toggle API
-    ├── preset_windows.go         # 「投げて遊べる」アプリのプリセット一覧 (ブラウザ・電卓・メモ帳等)
-    ├── preset_darwin.go          # macOS スタブ (Presets() は空スライス)
-    ├── menu_windows.go           # TrackPopupMenu ラッパ (ctx メニュー)
-    └── menu_darwin.go            # macOS スタブ (ShowPopupMenu は常に 0 を返す)
+    ├── preset.go                 # 「投げて遊べる」アプリのプリセット一覧 (ブラウザ・電卓・メモ帳等)
+    └── menu.go                   # TrackPopupMenu ラッパ (ctx メニュー)
 ```
+
+`platform/` 内のファイルは Win32 API (`golang.org/x/sys/windows` + `syscall`) に
+依存しているため、`GOOS=windows` 以外でのビルドは通らない。これは意図的な制約であり、
+クロスプラットフォーム対応のためのスタブ層は持たない (README「やらないこと」参照)。
 
 ### 実行時アセット (実行ファイルと同階層)
 
@@ -137,8 +136,7 @@ img/
   冒頭のミューテーションキュー経由で main thread に集約する。
   任意アクション再生は、XML 互換確認や特定アニメーションを直接見たい利用に応える通常機能として残す
 - **CLI フラグ** — `-name`, `-conf` (既定 `conf`), `-img` (既定 `img`),
-  `-windows-config` (既定 `[conf]/windows.json`), `-debug` (Behavior/Action
-  遷移ログ), `-trace-affordance` (Broadcast/ScanMove イベントのみログ)
+  `-windows-config` (既定 `[conf]/windows.json`)
 - **共有 Environment / 共有 goja Runtime** — `env.Refresh()` は tick あたり 1
   回、`platform syscall` を個体数 N に対して N→1 に圧縮。Runtime
   も同キャラ全個体で 1 個に共有 (個体コンテキストは `mascot` グローバルを毎 tick

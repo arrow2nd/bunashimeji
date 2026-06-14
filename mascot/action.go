@@ -1,7 +1,6 @@
 package mascot
 
 import (
-	"fmt"
 	"image"
 	"log"
 
@@ -29,9 +28,6 @@ func newActionState(a *Action, m *Mascot) *ActionState {
 		}
 		s.CachedParams["param:"+name] = v
 	}
-	if m.OnActionEnter != nil {
-		m.OnActionEnter(a.Name, a.Type)
-	}
 	return s
 }
 
@@ -43,7 +39,7 @@ func StepAction(s *ActionState, m *Mascot, env *Environment) (done bool) {
 	}
 	switch s.Action.Type {
 	case "Stay":
-		return stepStay(s, m)
+		return stepStay(s, m, env)
 	case "Animate":
 		return stepAnimate(s, m, env)
 	case "Move":
@@ -167,7 +163,29 @@ func advanceAnimation(s *ActionState, m *Mascot, _ *Environment, loop bool) bool
 
 // ----------- Type 別実装 -----------
 
-func stepStay(s *ActionState, m *Mascot) bool {
+// borderLost は Action の BorderType 制約 (Floor/Wall/Ceiling) が外れたかを返す。
+// stepStay / stepAnimate / stepMove のループ末尾で「該当境界に接していない」と
+// 判定されたら true を返す。BorderType が空・未知なら false (制約なし)。
+// shimeji-ee 本家では BorderType は Action 種別を問わず「該当境界が外れた瞬間に
+// Action を打ち切る」契約だが、当方の以前の実装では stepMove だけが見ていたため、
+// GrabWall (Stay, BorderType=Wall) などが壁喪失後も再生し続け「存在しない壁に
+// 貼りつく」挙動を起こしていた。
+func borderLost(env *Environment, anchor image.Point, borderType string) bool {
+	switch borderType {
+	case "Floor":
+		return !env.IsOnFloor(anchor)
+	case "Wall":
+		return !env.IsOnWall(anchor)
+	case "Ceiling":
+		return !env.IsOnCeiling(anchor)
+	}
+	return false
+}
+
+func stepStay(s *ActionState, m *Mascot, env *Environment) bool {
+	if borderLost(env, m.Anchor, s.Action.BorderType) {
+		return true
+	}
 	// Animation があれば再生、なければ Duration まで何もしない
 	if len(s.Action.Animations) > 0 {
 		anim := pickAnimation(s, m)
@@ -197,6 +215,9 @@ func stepStay(s *ActionState, m *Mascot) bool {
 }
 
 func stepAnimate(s *ActionState, m *Mascot, env *Environment) bool {
+	if borderLost(env, m.Anchor, s.Action.BorderType) {
+		return true
+	}
 	return advanceAnimation(s, m, env, false)
 }
 
@@ -207,11 +228,8 @@ func stepMove(s *ActionState, m *Mascot, env *Environment) bool {
 	// 落ちた場合に 1 tick で終了してしまうので、方向通過方式にする。
 	if init, _ := s.CachedParams["_moveinit"].(bool); !init {
 		s.CachedParams["_moveinit"] = true
-		var tx, ty int
-		hasTX, hasTY := false, false
 		if ev, ok := s.Action.Params["TargetX"]; ok && ev != nil {
-			tx, _ = ev.EvalInt(m.vm, s.CachedParams)
-			hasTX = true
+			tx, _ := ev.EvalInt(m.vm, s.CachedParams)
 			s.CachedParams["_targetX"] = tx
 			switch {
 			case tx > m.Anchor.X:
@@ -225,8 +243,7 @@ func stepMove(s *ActionState, m *Mascot, env *Environment) bool {
 			}
 		}
 		if ev, ok := s.Action.Params["TargetY"]; ok && ev != nil {
-			ty, _ = ev.EvalInt(m.vm, s.CachedParams)
-			hasTY = true
+			ty, _ := ev.EvalInt(m.vm, s.CachedParams)
 			s.CachedParams["_targetY"] = ty
 			switch {
 			case ty > m.Anchor.Y:
@@ -236,16 +253,6 @@ func stepMove(s *ActionState, m *Mascot, env *Environment) bool {
 			default:
 				s.CachedParams["_dirY"] = 0
 			}
-		}
-		if m.OnMoveStart != nil && (hasTX || hasTY) {
-			t := m.Anchor
-			if hasTX {
-				t.X = tx
-			}
-			if hasTY {
-				t.Y = ty
-			}
-			m.OnMoveStart(s.Action.Name, t, m.Anchor)
 		}
 	}
 	// Animation はループ再生 (TargetX/Y 到達か境界衝突で終了)
@@ -288,19 +295,8 @@ func stepMove(s *ActionState, m *Mascot, env *Environment) bool {
 	}
 	// BorderType は「該当境界に接している間のみ有効」 = 接していない瞬間に終了する。
 	// 例: Walk は BorderType="Floor" → 床から落ちたら終了 (Fall に遷移)
-	switch s.Action.BorderType {
-	case "Floor":
-		if !env.IsOnFloor(m.Anchor) {
-			return true
-		}
-	case "Wall":
-		if !env.IsOnWall(m.Anchor) {
-			return true
-		}
-	case "Ceiling":
-		if !env.IsOnCeiling(m.Anchor) {
-			return true
-		}
+	if borderLost(env, m.Anchor, s.Action.BorderType) {
+		return true
 	}
 	return false
 }
@@ -977,16 +973,6 @@ func stepJumping(s *ActionState, m *Mascot, env *Environment) bool {
 			ty, _ := ev.EvalInt(m.vm, s.CachedParams)
 			s.CachedParams["_targetY"] = ty
 		}
-		if m.OnMoveStart != nil {
-			t := m.Anchor
-			if v, ok := s.CachedParams["_targetX"]; ok {
-				t.X = toInt(v)
-			}
-			if v, ok := s.CachedParams["_targetY"]; ok {
-				t.Y = toInt(v)
-			}
-			m.OnMoveStart(s.Action.Name, t, m.Anchor)
-		}
 	} else {
 		vx = toFloat(s.CachedParams["_vx"])
 		vy = toFloat(s.CachedParams["_vy"])
@@ -1074,9 +1060,6 @@ func stepBroadcast(s *ActionState, m *Mascot, env *Environment) bool {
 	if entry == nil {
 		entry = m.registry.Register(s.Action.Affordance, m, m.Anchor)
 		s.CachedParams["_entry"] = entry
-		if m.OnAffordance != nil {
-			m.OnAffordance("broadcast-start", s.Action.Affordance, m.Name)
-		}
 	}
 	entry.Position = m.Anchor
 
@@ -1084,9 +1067,6 @@ func stepBroadcast(s *ActionState, m *Mascot, env *Environment) bool {
 	if entry.Arrived {
 		if entry.TargetBehavior != "" {
 			m.forcedNext = &BehaviorRef{Name: entry.TargetBehavior}
-		}
-		if m.OnAffordance != nil {
-			m.OnAffordance("broadcast-arrived", s.Action.Affordance, "→ "+entry.TargetBehavior)
 		}
 		m.registry.Unregister(entry)
 		return true
@@ -1096,25 +1076,16 @@ func stepBroadcast(s *ActionState, m *Mascot, env *Environment) bool {
 	switch s.Action.BorderType {
 	case "Floor":
 		if !env.IsOnFloor(m.Anchor) {
-			if m.OnAffordance != nil {
-				m.OnAffordance("broadcast-border-lost", s.Action.Affordance, "Floor")
-			}
 			m.registry.Unregister(entry)
 			return true
 		}
 	case "Wall":
 		if !env.IsOnWall(m.Anchor) {
-			if m.OnAffordance != nil {
-				m.OnAffordance("broadcast-border-lost", s.Action.Affordance, "Wall")
-			}
 			m.registry.Unregister(entry)
 			return true
 		}
 	case "Ceiling":
 		if !env.IsOnCeiling(m.Anchor) {
-			if m.OnAffordance != nil {
-				m.OnAffordance("broadcast-border-lost", s.Action.Affordance, "Ceiling")
-			}
 			m.registry.Unregister(entry)
 			return true
 		}
@@ -1123,9 +1094,6 @@ func stepBroadcast(s *ActionState, m *Mascot, env *Environment) bool {
 	// アニメーション再生 (loop=false → 全 Pose 完走で終了)
 	if advanceAnimation(s, m, env, false) {
 		// アニメ完走 = 規定時間 (例 Duration=250 ≒ 10s) 待っても誰も来なかった = タイムアウト
-		if m.OnAffordance != nil {
-			m.OnAffordance("broadcast-timeout", s.Action.Affordance, "animation completed, no scanmove arrived")
-		}
 		m.registry.Unregister(entry)
 		return true
 	}
@@ -1147,9 +1115,6 @@ func stepScanMove(s *ActionState, m *Mascot, env *Environment) bool {
 		target = m.registry.FindNearest(s.Action.Affordance, m.Anchor, m)
 		if target == nil {
 			// 候補なし → 即終了 (NextBehavior 通常抽選へ)
-			if m.OnAffordance != nil {
-				m.OnAffordance("scanmove-no-target", s.Action.Affordance, m.Name)
-			}
 			return true
 		}
 		s.CachedParams["_target"] = target
@@ -1164,30 +1129,10 @@ func stepScanMove(s *ActionState, m *Mascot, env *Environment) bool {
 		default:
 			s.CachedParams["_dirX"] = 0
 		}
-		if m.OnAffordance != nil {
-			// 距離 (Manhattan) を含めて成立しやすさを可視化する。
-			// ScanMove の歩行速度 × Broadcast 残り時間と比較すれば「届く可能性」が見える。
-			distance := abs(target.Position.X-m.Anchor.X) + abs(target.Position.Y-m.Anchor.Y)
-			detail := fmt.Sprintf("%s → ?, dist=%d", m.Name, distance)
-			if target.Mascot != nil {
-				detail = fmt.Sprintf("%s → %s, dist=%d", m.Name, target.Mascot.Name, distance)
-			}
-			m.OnAffordance("scanmove-found", s.Action.Affordance, detail)
-		}
-		if m.OnMoveStart != nil {
-			m.OnMoveStart(s.Action.Name, target.Position, m.Anchor)
-		}
 	}
 
 	// target が unregister された (broadcaster が中断・到着済み他者勝ち) → 失敗終了
 	if target.Cancelled || target.Arrived {
-		if m.OnAffordance != nil {
-			reason := "target unregistered"
-			if target.Arrived {
-				reason = "another mascot arrived first"
-			}
-			m.OnAffordance("scanmove-failed", s.Action.Affordance, reason)
-		}
 		return true
 	}
 
@@ -1213,13 +1158,6 @@ func stepScanMove(s *ActionState, m *Mascot, env *Environment) bool {
 		if s.Action.BehaviorAttr != "" {
 			m.forcedNext = &BehaviorRef{Name: s.Action.BehaviorAttr}
 		}
-		if m.OnAffordance != nil {
-			detail := m.Name + " → " + s.Action.BehaviorAttr
-			if target.Mascot != nil {
-				detail += " / " + target.Mascot.Name + " → " + s.Action.TargetBehaviorAttr
-			}
-			m.OnAffordance("scanmove-arrived", s.Action.Affordance, detail)
-		}
 		return true
 	}
 
@@ -1227,23 +1165,14 @@ func stepScanMove(s *ActionState, m *Mascot, env *Environment) bool {
 	switch s.Action.BorderType {
 	case "Floor":
 		if !env.IsOnFloor(m.Anchor) {
-			if m.OnAffordance != nil {
-				m.OnAffordance("scanmove-border-lost", s.Action.Affordance, "Floor")
-			}
 			return true
 		}
 	case "Wall":
 		if !env.IsOnWall(m.Anchor) {
-			if m.OnAffordance != nil {
-				m.OnAffordance("scanmove-border-lost", s.Action.Affordance, "Wall")
-			}
 			return true
 		}
 	case "Ceiling":
 		if !env.IsOnCeiling(m.Anchor) {
-			if m.OnAffordance != nil {
-				m.OnAffordance("scanmove-border-lost", s.Action.Affordance, "Ceiling")
-			}
 			return true
 		}
 	}

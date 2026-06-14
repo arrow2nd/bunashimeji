@@ -27,19 +27,15 @@ const tickInterval = 40 * time.Millisecond
 
 func main() {
 	var (
-		nameFlag        string
-		confDir         string
-		imgDir          string
-		windowsConfig   string
-		debugFlag       bool
-		traceAffordance bool
+		nameFlag      string
+		confDir       string
+		imgDir        string
+		windowsConfig string
 	)
 	flag.StringVar(&nameFlag, "name", "", "起動するキャラ名 (img/[名前]/)。空ならすべて起動")
 	flag.StringVar(&confDir, "conf", "conf", "設定 XML のルートディレクトリ")
 	flag.StringVar(&imgDir, "img", "img", "画像のルートディレクトリ")
 	flag.StringVar(&windowsConfig, "windows-config", "", "ウィンドウ追従ホワイトリストの JSON (省略時は [conf]/windows.json)")
-	flag.BoolVar(&debugFlag, "debug", false, "Behavior/Action 遷移をすべてログ出力")
-	flag.BoolVar(&traceAffordance, "trace-affordance", false, "Broadcast/ScanMove のアフォーダンスイベントだけログ出力 (-debug より優先)")
 	flag.Parse()
 
 	exe, err := os.Executable()
@@ -103,44 +99,6 @@ func main() {
 	// 全 Mascot で共有する。1 プロセス N キャラなのでロック不要。
 	registry := mascot.NewBroadcastRegistry()
 
-	// キャラごとのテンプレート (XML/PNG ロード結果) をキャッシュ。
-	// Breed で同キャラを増やすたびに再ロードしないように。
-	templates := map[string]*mascot.CharacterTemplate{}
-	loadTemplate := func(n string) {
-		if _, ok := templates[n]; ok {
-			return
-		}
-		tpl, err := mascot.LoadCharacterTemplate(confDir, imgDir, n)
-		if err != nil {
-			log.Printf("load template %q: %v", n, err)
-			return
-		}
-		templates[n] = tpl
-		if debugFlag {
-			// フォールバックで別キャラの XML を読んでいないかの診断用。
-			// actions/behaviors/images の数を出せば、想定キャラとずれた時に気付ける。
-			log.Printf("[%s] template loaded: actions=%d behaviors=%d images=%d",
-				n, len(tpl.Actions), len(tpl.Behaviors), len(tpl.Images))
-		}
-	}
-	for _, n := range names {
-		loadTemplate(n)
-	}
-	// Transform 先キャラのテンプレートも自動ロード。
-	// -name Hayate 単独起動でも、Hayate の Action に TransformMascot="Nagi" があれば
-	// Nagi の template/image を読み込んでおかないと変身要求が捨てられる。
-	// 直接ロードしたキャラの Actions だけスキャンする (推移閉包までは追わない)。
-	for _, tpl := range templates {
-		for _, a := range tpl.Actions {
-			if a.TransformMascot != "" {
-				loadTemplate(a.TransformMascot)
-			}
-		}
-	}
-	if len(templates) == 0 {
-		log.Fatal("no character templates loaded")
-	}
-
 	// 全 Mascot で共有する Environment。onTick 冒頭で 1 度だけ Refresh して
 	// platform syscall (EnumDisplayMonitors / GetCursorPos / GetForegroundWindow 周り)
 	// を個体数 N に対して N→1 倍に圧縮する。Refresh は NewInstance 内の位置決定でも
@@ -149,12 +107,35 @@ func main() {
 	env.Refresh()
 
 	// Spawner: stepBreed からのリクエストを受けて、Tick callback 末尾で実 Mascot/Window を作る。
-	sp := newSpawner(templates, registry, env, debugFlag, traceAffordance, cancel)
+	// テンプレートのロードも spawner に集約しておくと、コンテキストメニューの「呼ぶ」から
+	// 起動時には未ロードのキャラを後追いで呼び出せる。
+	sp := newSpawner(confDir, imgDir, registry, env, cancel)
+
+	// キャラごとのテンプレート (XML/PNG ロード結果) をキャッシュ。Breed や Transform
+	// で同キャラを増やすたびに再ロードしないように、初期キャラ + その Transform 先を
+	// 先に読み込む。
+	for _, n := range names {
+		sp.loadTemplate(n)
+	}
+	// Transform 先キャラのテンプレートも自動ロード。
+	// -name Hayate 単独起動でも、Hayate の Action に TransformMascot="Nagi" があれば
+	// Nagi の template/image を読み込んでおかないと変身要求が捨てられる。
+	// 直接ロードしたキャラの Actions だけスキャンする (推移閉包までは追わない)。
+	for _, tpl := range sp.templates {
+		for _, a := range tpl.Actions {
+			if a.TransformMascot != "" {
+				sp.loadTemplate(a.TransformMascot)
+			}
+		}
+	}
+	if len(sp.templates) == 0 {
+		log.Fatal("no character templates loaded")
+	}
 
 	// 初期キャラの作成も Spawner 経由で統一する。
 	// (countByName が初期生成分も含めて正しくカウントされるため)
 	for _, n := range names {
-		if _, ok := templates[n]; !ok {
+		if _, ok := sp.templates[n]; !ok {
 			continue
 		}
 		c := sp.spawnCharacter(mascot.SpawnRequest{
@@ -176,12 +157,17 @@ func main() {
 	}()
 
 	// タスクバー常駐 (Win32) を起動。tray メニュー操作は別 goroutine で発生するため、
-	// chars / Mascot 状態を触る系 (ふやす / あつまれ / 1匹だけのこす) は queueMutation 経由で
+	// chars / Mascot 状態を触る系 (ふやす / あつまれ / 1匹だけのこす / 呼ぶ) は queueMutation 経由で
 	// main thread に橋渡しし tick 冒頭で消化する。
 	// 「ばいばい」は context.CancelFunc が thread-safe なので直接呼ぶ。
+	// CharacterNames は tray 起動時 (= 1 回だけ) サブメニュー組み立て用に呼ばれる。
+	// img/ 直下の列挙のみで mutation を伴わないため、main thread に橋渡しせず直接呼ぶ。
 	startTray(TrayCallbacks{
 		OnSpawnRandom: func() {
 			sp.queueMutation(func(s *spawner) { s.spawnRandom() })
+		},
+		OnSummon: func(name string) {
+			sp.queueMutation(func(s *spawner) { s.summon(name) })
 		},
 		OnGather: func() {
 			sp.queueMutation(func(s *spawner) { s.gatherAll() })
@@ -190,6 +176,14 @@ func main() {
 			sp.queueMutation(func(s *spawner) { s.keepOnly(nil) })
 		},
 		OnQuit: func() { cancel() },
+		CharacterNames: func() []string {
+			names, err := mascot.CharacterDirs(imgDir)
+			if err != nil {
+				log.Printf("tray 呼ぶ: list characters: %v", err)
+				return nil
+			}
+			return names
+		},
 	})
 	defer stopTray()
 
@@ -229,11 +223,10 @@ type spawner struct {
 	pending          []mascot.SpawnRequest
 	pendingTransform []mascot.TransformRequest
 
+	confDir, imgDir string
 	templates       map[string]*mascot.CharacterTemplate
 	registry        *mascot.BroadcastRegistry
 	env             *mascot.Environment
-	debug           bool
-	traceAffordance bool
 	cancel          context.CancelFunc
 
 	chars       []*Character
@@ -249,22 +242,36 @@ type spawner struct {
 }
 
 func newSpawner(
-	templates map[string]*mascot.CharacterTemplate,
+	confDir, imgDir string,
 	registry *mascot.BroadcastRegistry,
 	env *mascot.Environment,
-	debug bool,
-	traceAffordance bool,
 	cancel context.CancelFunc,
 ) *spawner {
 	return &spawner{
-		templates:       templates,
-		registry:        registry,
-		env:             env,
-		debug:           debug,
-		traceAffordance: traceAffordance,
-		cancel:          cancel,
-		countByName:     map[string]int{},
+		confDir:     confDir,
+		imgDir:      imgDir,
+		templates:   map[string]*mascot.CharacterTemplate{},
+		registry:    registry,
+		env:         env,
+		cancel:      cancel,
+		countByName: map[string]int{},
 	}
+}
+
+// loadTemplate は name のテンプレートを読み込んで s.templates に登録する。
+// 既ロードなら no-op、ロード失敗ならログを出してそのまま戻る (呼び元は s.templates の
+// 存在チェックで失敗を検知する)。コンテキストメニュー「呼ぶ」のように起動時に未ロードの
+// キャラを後追いで召喚する経路と、起動時の一括ロード経路の両方で使う。
+func (s *spawner) loadTemplate(name string) {
+	if _, ok := s.templates[name]; ok {
+		return
+	}
+	tpl, err := mascot.LoadCharacterTemplate(s.confDir, s.imgDir, name)
+	if err != nil {
+		log.Printf("load template %q: %v", name, err)
+		return
+	}
+	s.templates[name] = tpl
 }
 
 // Spawn は mascot.Spawner の実装。stepBreed から Tick 中に呼ばれる。
@@ -344,6 +351,17 @@ func (s *spawner) spawnRandom() {
 	name := names[rand.IntN(len(names))]
 	if c := s.spawnCharacter(mascot.SpawnRequest{ParentName: name}); c != nil {
 		log.Printf("spawned %q via tray ふやす (total=%d)", name, len(s.chars))
+	}
+}
+
+// summon は name のキャラを 1 体追加する。tray「呼ぶ」サブメニュー用。
+// 起動時に未ロード / keepOnly で落とされたキャラでも後追いロードして召喚できるよう、
+// spawnCharacter の前に loadTemplate を通す。ロード失敗時は spawnCharacter 側で
+// "no template for ..." とログが出るだけ (= キャラディレクトリ不正の通知)。
+func (s *spawner) summon(name string) {
+	s.loadTemplate(name)
+	if c := s.spawnCharacter(mascot.SpawnRequest{ParentName: name}); c != nil {
+		log.Printf("spawned %q via tray 呼ぶ (total=%d)", name, len(s.chars))
 	}
 }
 
@@ -543,14 +561,6 @@ func (s *spawner) spawnCharacter(req mascot.SpawnRequest) *Character {
 		InitialBehavior: req.InitialBehavior,
 		Env:             s.env,
 	})
-	// traceAffordance が立っていればアフォーダンスログだけに絞る (debug より優先)。
-	// debug 単独なら従来通り全イベントを流す。
-	switch {
-	case s.traceAffordance:
-		wireAffordanceCallback(inst)
-	case s.debug:
-		wireDebugCallbacks(inst)
-	}
 
 	c, err := s.newCharacterFromMascot(inst)
 	if err != nil {
@@ -560,36 +570,6 @@ func (s *spawner) spawnCharacter(req mascot.SpawnRequest) *Character {
 	s.chars = append(s.chars, c)
 	s.countByName[req.ParentName]++
 	return c
-}
-
-// wireDebugCallbacks は -debug 時にコンソールへ Behavior/Action 遷移を流すためのフック。
-func wireDebugCallbacks(m *mascot.Mascot) {
-	m.OnBehaviorChange = func(name string) {
-		log.Printf("[%s] behavior: %s", m.Name, name)
-	}
-	m.OnActionEnter = func(actionName, atype string) {
-		if actionName == "" {
-			actionName = "<inline>"
-		}
-		log.Printf("[%s]   action: %s (%s)", m.Name, actionName, atype)
-	}
-	m.OnMoveStart = func(actionName string, target, anchor image.Point) {
-		scr := m.Env().CurrentScreen(anchor)
-		log.Printf("[%s]     move %q: target=(%d,%d) anchor=(%d,%d) screen=[%d..%d, %d..%d]",
-			m.Name, actionName, target.X, target.Y, anchor.X, anchor.Y,
-			scr.Min.X, scr.Max.X, scr.Min.Y, scr.Max.Y)
-	}
-	m.OnAffordance = func(event, affordance, detail string) {
-		log.Printf("[%s]   AFFORDANCE %s: %q (%s)", m.Name, event, affordance, detail)
-	}
-}
-
-// wireAffordanceCallback は OnAffordance だけを wire する (-trace-affordance 用)。
-// Behavior/Action/Move のノイズを排してアフォーダンス成立を観察したい場面で使う。
-func wireAffordanceCallback(m *mascot.Mascot) {
-	m.OnAffordance = func(event, affordance, detail string) {
-		log.Printf("[%s] AFFORDANCE %s: %q (%s)", m.Name, event, affordance, detail)
-	}
 }
 
 // ----------- Character: Mascot + Win32 ウィンドウ -----------
@@ -659,7 +639,7 @@ func (s *spawner) newCharacterFromMascot(m *mascot.Mascot) (*Character, error) {
 // ----------- コンテキストメニュー -----------
 
 // メニュー leaf の command ID。0 は TrackPopupMenu の「キャンセル」と衝突するので 1 以上。
-// Action 列の ID は ctxCmdActionBase から連番で割り当て、選択時に nameByID で名前に逆引きする。
+// Action 列の ID は ctxCmdActionBase から連番で割り当て、選択時に actionByID で名前に逆引きする。
 const (
 	ctxCmdRemoveSelf = 1
 	ctxCmdKeepSelf   = 2
@@ -683,12 +663,12 @@ func (s *spawner) showContextMenu(target *Character) {
 	}
 	sort.Strings(actionNames)
 
-	nameByID := make(map[int]string, len(actionNames))
-	subItems := make([]platform.MenuItem, 0, len(actionNames))
+	actionByID := make(map[int]string, len(actionNames))
+	actionItems := make([]platform.MenuItem, 0, len(actionNames))
 	for i, name := range actionNames {
 		id := ctxCmdActionBase + i
-		nameByID[id] = name
-		subItems = append(subItems, platform.MenuItem{ID: id, Label: name})
+		actionByID[id] = name
+		actionItems = append(actionItems, platform.MenuItem{ID: id, Label: name})
 	}
 
 	items := []platform.MenuItem{
@@ -698,8 +678,8 @@ func (s *spawner) showContextMenu(target *Character) {
 		{Separator: true},
 		{
 			Label:    "アクションを選んで再生",
-			Submenu:  subItems,
-			Disabled: len(subItems) == 0,
+			Submenu:  actionItems,
+			Disabled: len(actionItems) == 0,
 		},
 	}
 
@@ -722,7 +702,7 @@ func (s *spawner) showContextMenu(target *Character) {
 			}
 		})
 	default:
-		name, ok := nameByID[cmd]
+		name, ok := actionByID[cmd]
 		if !ok {
 			return
 		}
