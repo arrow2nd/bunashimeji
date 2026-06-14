@@ -431,7 +431,7 @@ for {
 
 ## platform/ レイヤ
 
-OS 依存処理は Windows 専用。`platform/` は Win32 API 前提で、非 Windows 向けスタブは持たない。
+OS 依存処理は Windows 専用 (実装)。`platform/` は Win32 API 前提だが、`*_darwin.go` で macOS 向けの no-op / error 返却スタブを併設し、`GOOS=darwin` でもパッケージとしてクロスコンパイルが通る状態を維持する (将来の macOS 対応用の土台で、現状は実機能なし)。
 
 ### Windows で使用する API
 
